@@ -2,7 +2,7 @@
 
 Sync selected GitHub Actions secrets to AWS Secrets Manager using OpenID Connect (OIDC), IAM roles, and Terraform.
 
-> **Status: planned / under development.** This README describes the intended implementation. The Terraform configuration, workflow, and synchronization script still need to be created and tested.
+> **Status: under development.** The initial Terraform infrastructure has been applied successfully. The GitHub Actions workflow and synchronization script are still planned; end-to-end OIDC authentication and secret synchronization have not yet been validated.
 
 ## Why this project?
 
@@ -20,7 +20,7 @@ The initial example will use repository secrets and a manually triggered workflo
 
 ## Intended architecture
 
-1. Terraform provisions the destination secret container, IAM role, and permissions, and creates or reuses the GitHub OIDC provider.
+1. Terraform provisions the destination secret container, IAM role, and permissions, and configures the GitHub OIDC provider. Reusing an existing provider requires explicit import or configuration changes.
 2. A maintainer starts the synchronization workflow with `workflow_dispatch`.
 3. GitHub Actions obtains an OIDC token and exchanges it for temporary AWS credentials through AWS STS.
 4. The workflow passes an explicit selection of GitHub secrets to the synchronization script.
@@ -28,27 +28,48 @@ The initial example will use repository secrets and a manually triggered workflo
 
 Terraform manages the infrastructure and secret metadata. The workflow manages secret values, keeping those values out of Terraform configuration and state.
 
-## Planned repository structure
+## Repository structure
 
-```text
-.github/workflows/
-  sync-secrets.yml
-infra/terraform/
-  versions.tf
-  providers.tf
-  main.tf
-  variables.tf
-  outputs.tf
-  terraform.tfvars.example
-scripts/
-  sync-secrets.py
-tests/
-  test_sync_secrets.py
-.gitignore
-README.md
+The current Terraform files are:
+
+| Path | Purpose |
+| --- | --- |
+| `infra/terraform/providers.tf` | AWS provider configuration and version requirements, if configured here |
+| `infra/terraform/oidc.tf` | GitHub OIDC identity provider |
+| `infra/terraform/iam.tf` | IAM role, OIDC trust policy, and inline Secrets Manager permissions |
+| `infra/terraform/secrets.tf` | Destination secret container, without a secret value |
+| `infra/terraform/variables.tf` | Input variable declarations |
+| `infra/terraform/outputs.tf` | Terraform outputs, including `secret_arn` |
+| `infra/terraform/terraform.tfvars` | Local input values; excluded from version control |
+| `infra/terraform/.terraform.lock.hcl` | Provider dependency lock file; committed to version control |
+| `.gitignore` | Excludes generated files and local configuration |
+| `README.md` | Project documentation |
+
+Planned additions:
+
+- `.github/workflows/sync-secrets.yml`: manually triggered synchronization workflow.
+- `scripts/sync-secrets.py`: input validation and secret upload.
+- `tests/test_sync_secrets.py`: synchronization tests.
+- `infra/terraform/terraform.tfvars.example`: reusable non-secret configuration example.
+
+All Terraform configuration files belong in `infra/terraform/`. Terraform evaluates the `.tf` files in that directory as one module; filenames organize resources rather than determine execution order.
+
+### Terraform input
+
+Declare `github_oidc_subject` in `variables.tf` and assign its value in the local `terraform.tfvars` file:
+
+```hcl
+# terraform.tfvars
+github_oidc_subject = "repo:aurelio-miguel@19332546/github-secrets-to-aws@1398887255:ref:refs/heads/main"
 ```
 
-The paths above are planned and may change during implementation.
+This is the configured subject for this project. Confirm it against the actual OIDC token's `sub` claim when testing the workflow. If copying this example, replace it with your own exact subject. An environment-based workflow may require a different subject.
+
+The subject is not a secret. Keep a portable example in `terraform.tfvars.example` when that file is added. Any other required variables without defaults also need values. The current secret name is defined in `secrets.tf` as `github-secrets-to-aws/demo`; configure the AWS region in `providers.tf` according to its existing configuration.
+
+### Generated local files
+
+Terraform also produces `.terraform/`, `terraform.tfstate`, and potentially `terraform.tfstate.backup`. These are local working files and must not be committed. Keep `.terraform.lock.hcl` tracked.
 
 ## Initial configuration contract
 
@@ -59,7 +80,7 @@ The following names are proposed for the first implementation.
 | Variable | Purpose | Example |
 | --- | --- | --- |
 | `AWS_REGION` | AWS region containing the destination secret | `us-east-1` |
-| `AWS_ROLE_ARN` | ARN of the IAM role assumed through OIDC | `arn:aws:iam::123456789012:role/github-secrets-sync` |
+| `AWS_ROLE_ARN` | ARN of the IAM role assumed through OIDC | `arn:aws:iam::123456789012:role/role-sync-github-secrets` |
 | `AWS_SECRET_ARN` | ARN of the destination secret created by Terraform | Terraform output |
 
 These settings are configuration values, not AWS access credentials.
@@ -75,31 +96,32 @@ Use fictional values while building and demonstrating the project.
 
 The initial design stores both values in a single JSON secret. Each synchronization replaces the complete JSON payload; it does not merge with existing keys. Missing or empty required inputs must fail validation before any write.
 
-## Planned setup
+## Infrastructure setup
 
-These steps describe the future setup process. They are not executable until the corresponding files have been implemented.
+The initial infrastructure has been applied. The following steps describe how to provision it in another AWS account; workflow execution remains pending implementation.
 
 1. Clone this repository.
 2. Authenticate locally to an AWS sandbox account using your preferred AWS profile or SSO session.
-3. Configure Terraform with your AWS region, GitHub repository, allowed branch, and destination secret name.
-4. Create or reuse the account's GitHub OIDC provider. Do not attempt to create a duplicate provider if one already exists.
+3. Review `providers.tf`, `secrets.tf`, and the exact GitHub subject in `terraform.tfvars`. Confirm the target AWS account with `aws sts get-caller-identity`.
+4. Check whether the account already has the GitHub OIDC provider. The current `oidc.tf` defines a provider resource; automatic reuse is not implemented. Import an existing provider into the appropriate Terraform resource, or deliberately adapt the configuration to reference it, before applying.
 5. Review and apply the Terraform plan.
-6. Copy the role ARN and destination secret ARN from Terraform outputs into GitHub Actions variables.
-7. Add the example source secrets in the repository settings.
+6. Once the workflow exists, configure its GitHub Actions variables. Retrieve the secret ARN with `terraform output -raw secret_arn`; retrieve the role ARN with `aws iam get-role --role-name role-sync-github-secrets --query Role.Arn --output text`, or add a role ARN output.
+7. Once the workflow and script exist, add the example source secrets in the repository settings.
 8. Run the workflow manually from the authorized branch.
 9. Verify the destination version in AWS using an identity with read permissions. Do not print secret values in workflow logs.
 
-Example Terraform commands, once the files exist:
+Run the infrastructure commands from the Terraform directory:
 
 ```bash
 cd infra/terraform
-cp terraform.tfvars.example terraform.tfvars
-# Edit terraform.tfvars with your non-secret configuration.
+# Create or edit terraform.tfvars with your exact github_oidc_subject.
+# A terraform.tfvars.example file is planned but is not required yet.
 terraform init
 terraform fmt -check
 terraform validate
 terraform plan
 terraform apply
+terraform output -raw secret_arn
 ```
 
 Local Terraform credentials are required for the initial setup. The synchronization role cannot bootstrap itself before it exists.
@@ -128,9 +150,11 @@ The Terraform provisioning identity has separate permissions to create and manag
 
 ## Roadmap
 
-- [ ] Create Terraform configuration for the OIDC provider, IAM role, and destination secret.
+- [x] Create the initial Terraform configuration for the OIDC provider, IAM role, and destination secret.
+- [x] Apply the initial infrastructure successfully.
+- [x] Add the destination `secret_arn` output.
 - [ ] Support reuse of an existing OIDC provider.
-- [ ] Add Terraform outputs and a non-secret variables example.
+- [ ] Add a role ARN output and a non-secret `terraform.tfvars.example`.
 - [ ] Implement input validation and JSON serialization.
 - [ ] Implement the Secrets Manager write operation.
 - [ ] Create the manually triggered GitHub Actions workflow.
