@@ -1,0 +1,4 @@
+# Exact GitHub OIDC subject allowed to assume the AWS role.
+# Replace the placeholders and verify the workflow token's sub claim.
+# This example assumes branch main and no GitHub Environment.
+github_oidc_subject = "repo:YOUR_USERNAME@OWNER_ID/YOUR_REPOSITORY@REPO_ID:ref:refs/heads/main"
