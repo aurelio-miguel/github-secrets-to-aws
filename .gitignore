@@ -1,0 +1,35 @@
+# Terraform working directories and local state
+**/.terraform/
+*.tfstate
+*.tfstate.*
+.terraform.tfstate.lock.info
+
+# Saved Terraform plans
+*.tfplan
+tfplan
+
+# Local variable values; keep sanitized examples versioned
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+!*.tfvars.json.example
+
+# Local Terraform overrides and CLI configuration
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+.terraformrc
+terraform.rc
+
+# Terraform crash logs
+crash.log
+crash.*.log
+
+# Local environment files and AWS credentials
+.env
+.env.*
+!.env.example
+.aws/
+
+# Keep .terraform.lock.hcl versioned for reproducible provider versions
