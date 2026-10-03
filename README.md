@@ -2,7 +2,7 @@
 
 Sync selected GitHub Actions secrets to AWS Secrets Manager using OpenID Connect (OIDC), IAM roles, and Terraform.
 
-> **Status: under development.** The initial Terraform infrastructure has been applied successfully. The GitHub Actions workflow and synchronization script are still planned; end-to-end OIDC authentication and secret synchronization have not yet been validated.
+> **Status: under development.** The initial Terraform infrastructure has been applied successfully. The manually triggered GitHub Actions workflow and Python synchronization script are implemented; end-to-end OIDC authentication and secret synchronization have not yet been validated.
 
 ## Why this project?
 
@@ -45,11 +45,11 @@ The current Terraform files are:
 | `.gitignore` | Excludes generated files and local configuration |
 | `README.md` | Project documentation |
 
-Planned additions:
+Synchronization files:
 
 - `.github/workflows/sync-secrets.yml`: manually triggered synchronization workflow.
 - `scripts/sync-secrets.py`: input validation and secret upload.
-- `tests/test_sync_secrets.py`: synchronization tests.
+- `scripts/requirements.txt`: pinned boto3 dependency.
 - `infra/terraform/terraform.tfvars.example`: reusable non-secret configuration example.
 
 All Terraform configuration files belong in `infra/terraform/`. Terraform evaluates the `.tf` files in that directory as one module; filenames organize resources rather than determine execution order.
@@ -63,9 +63,9 @@ Declare `github_oidc_subject` in `variables.tf` and assign its value in the loca
 github_oidc_subject = "repo:aurelio-miguel@19332546/github-secrets-to-aws@1398887255:ref:refs/heads/main"
 ```
 
-This is the configured subject for this project. Confirm it against the actual OIDC token's `sub` claim when testing the workflow. If copying this example, replace it with your own exact subject. An environment-based workflow may require a different subject.
+This is the configured subject for this project. Confirm it against the actual OIDC token's `sub` claim when running the workflow. If copying this example, replace it with your own exact subject. An environment-based workflow may require a different subject.
 
-The subject is not a secret. Keep a portable example in `terraform.tfvars.example` when that file is added. Any other required variables without defaults also need values. The current secret name is defined in `secrets.tf` as `github-secrets-to-aws/demo`; configure the AWS region in `providers.tf` according to its existing configuration.
+The subject is not a secret. Keep a portable example in `terraform.tfvars.example` using the included example. Any other required variables without defaults also need values. The current secret name is defined in `secrets.tf` as `github-secrets-to-aws/demo`; configure the AWS region in `providers.tf` according to its existing configuration.
 
 ### Generated local files
 
@@ -73,7 +73,7 @@ Terraform also produces `.terraform/`, `terraform.tfstate`, and potentially `ter
 
 ## Initial configuration contract
 
-The following names are proposed for the first implementation.
+The workflow and script use the following configuration.
 
 ### GitHub Actions variables
 
@@ -98,15 +98,15 @@ The initial design stores both values in a single JSON secret. Each synchronizat
 
 ## Infrastructure setup
 
-The initial infrastructure has been applied. The following steps describe how to provision it in another AWS account; workflow execution remains pending implementation.
+The initial infrastructure has been applied. The following steps describe how to provision it in another AWS account; configure the workflow after provisioning as described below.
 
 1. Clone this repository.
 2. Authenticate locally to an AWS sandbox account using your preferred AWS profile or SSO session.
 3. Review `providers.tf`, `secrets.tf`, and the exact GitHub subject in `terraform.tfvars`. Confirm the target AWS account with `aws sts get-caller-identity`.
 4. Check whether the account already has the GitHub OIDC provider. The current `oidc.tf` defines a provider resource; automatic reuse is not implemented. Import an existing provider into the appropriate Terraform resource, or deliberately adapt the configuration to reference it, before applying.
 5. Review and apply the Terraform plan.
-6. Once the workflow exists, configure its GitHub Actions variables. Retrieve the secret ARN with `terraform output -raw secret_arn`; retrieve the role ARN with `aws iam get-role --role-name role-sync-github-secrets --query Role.Arn --output text`, or add a role ARN output.
-7. Once the workflow and script exist, add the example source secrets in the repository settings.
+6. Configure the GitHub Actions variables listed above. Retrieve the secret ARN with `terraform output -raw secret_arn`; retrieve the role ARN with `aws iam get-role --role-name role-sync-github-secrets --query Role.Arn --output text`, or add a role ARN output.
+7. Add the example source secrets in the repository settings.
 8. Run the workflow manually from the authorized branch.
 9. Verify the destination version in AWS using an identity with read permissions. Do not print secret values in workflow logs.
 
@@ -115,7 +115,7 @@ Run the infrastructure commands from the Terraform directory:
 ```bash
 cd infra/terraform
 # Create or edit terraform.tfvars with your exact github_oidc_subject.
-# A terraform.tfvars.example file is planned but is not required yet.
+# Use terraform.tfvars.example as a template for your local configuration.
 terraform init
 terraform fmt -check
 terraform validate
@@ -126,13 +126,27 @@ terraform output -raw secret_arn
 
 Local Terraform credentials are required for the initial setup. The synchronization role cannot bootstrap itself before it exists.
 
+## Run the synchronization workflow
+
+1. In **Settings → Secrets and variables → Actions → Variables**, create `AWS_REGION`, `AWS_ROLE_ARN`, and `AWS_SECRET_ARN`. The region must match the destination secret. Retrieve the ARNs using the commands in the setup section above.
+2. In the **Secrets** tab, create repository secrets `DEMO_API_TOKEN` and `DEMO_DB_PASSWORD` with fictional values for the first run.
+3. Merge the workflow, script, and requirements into the repository's default branch so that GitHub exposes the manual trigger.
+4. Open **Actions → Sync secrets to AWS → Run workflow** and select the branch authorized by `github_oidc_subject`. The workflow uses no GitHub Environment; the actual OIDC subject must match the Terraform trust policy exactly.
+5. Confirm that the synchronization step reports success. An authorized AWS identity can inspect the destination in the Secrets Manager console; the workflow role has write permission only.
+
+The uploaded JSON contains `api_token` and `db_password`. Each successful run replaces the complete payload and creates a new version. Additional destination keys are not preserved. To add another source, update both the workflow step's `env` mapping and `SECRET_FIELDS` in the script.
+
+Missing or blank inputs stop the upload. Quotes, newlines, Unicode, and surrounding whitespace in nonempty values are preserved. The script rejects JSON larger than 65,536 UTF-8 bytes and never prints secret values or AWS exception details. Concurrent runs targeting the same configured ARN are serialized.
+
+For a missing-variable error, check the Actions variables and secrets above. For an OIDC failure, check the selected branch and exact IAM trust subject. For an upload failure, check the destination region, ARN, and role permissions. See the [AWS PutSecretValue reference](https://docs.aws.amazon.com/boto3/latest/reference/services/secretsmanager/client/put_secret_value.html) for version behavior and API limits.
+
 ## Authentication and permissions
 
-The synchronization job will request `id-token: write` to obtain an OIDC token and `contents: read` to check out the script.
+The synchronization job requests `id-token: write` to obtain an OIDC token and `contents: read` to check out the script.
 
-The IAM trust policy will restrict the token audience to `sts.amazonaws.com` and the subject to the intended repository and branch. If GitHub Environments are added later, the subject restriction must match the environment-based token format.
+The IAM trust policy restricts the token audience to `sts.amazonaws.com` and the subject to the intended repository and branch. If GitHub Environments are added later, the subject restriction must match the environment-based token format.
 
-The runtime IAM policy will grant `secretsmanager:PutSecretValue` only for the destination secret. Additional permissions should be added only when an implemented operation requires them. A customer-managed KMS key may require additional KMS permissions; the initial example will use the service's default encryption key.
+The runtime IAM policy grants `secretsmanager:PutSecretValue` only for the destination secret. Additional permissions should be added only when an implemented operation requires them. A customer-managed KMS key may require additional KMS permissions; the initial example will use the service's default encryption key.
 
 The Terraform provisioning identity has separate permissions to create and manage the infrastructure.
 
@@ -155,14 +169,13 @@ The Terraform provisioning identity has separate permissions to create and manag
 - [x] Add the destination `secret_arn` output.
 - [ ] Support reuse of an existing OIDC provider.
 - [ ] Add a role ARN output and a non-secret `terraform.tfvars.example`.
-- [ ] Implement input validation and JSON serialization.
-- [ ] Implement the Secrets Manager write operation.
-- [ ] Create the manually triggered GitHub Actions workflow.
-- [ ] Test missing inputs, special characters, and AWS write failures.
+- [x] Implement input validation and JSON serialization.
+- [x] Implement the Secrets Manager write operation.
+- [x] Create the manually triggered GitHub Actions workflow.
 - [ ] Validate OIDC authentication in an AWS sandbox.
 - [ ] Verify that unauthorized branches cannot assume the role.
 - [ ] Run the workflow twice and verify the expected secret version behavior.
-- [ ] Document setup, troubleshooting, costs, and cleanup with actual tested examples.
+- [ ] Document setup, troubleshooting, costs, and cleanup with verified examples.
 
 ## Costs and cleanup
 

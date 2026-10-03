@@ -33,3 +33,8 @@ crash.*.log
 .aws/
 
 # Keep .terraform.lock.hcl versioned for reproducible provider versions
+
+# Python local environments and bytecode
+.venv/
+__pycache__/
+*.py[cod]
